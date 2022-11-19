@@ -1,5 +1,14 @@
 #!/bin/bash
 
+motd () {
+    echo " _    ______  ____________            __                                                  "
+    echo "| |  / / __ \/ ____/_  __/___  ____  / /____             __  ___ __ __  _   __ ___   _____"
+    echo "| | / / /_/ / /     / / / __ \/ __ \/ / ___/   _____    /  |/  // //_/ | | / // _ \ / ___/"
+    echo "| |/ / ____/ /___  / / / /_/ / /_/ / (__  )   /____/   / /|_/ // ,<    | |/ // ___// /__  "
+    echo "|___/_/    \____/ /_/  \____/\____/_/____/            /_/  /_//_/|_|   |___//_/    \___/  "
+    echo "                                                                                          "
+}
+
 usage () {
     echo "Usage : $0"
     echo "        $0 [OPTION]"
@@ -44,7 +53,7 @@ check_ipv4_list () {
 }
 
 waiting_ec2_state () {
-    echo -n "Démarrage de l'instance."
+    echo -n "Démarrage de l'instance." | tee logs/main.log
     local state=$(aws ec2 describe-instances --instance-ids $1 --query Reservations[0].Instances[0].State.Name --output text)
     until [[ $state == "running" ]]
     do
@@ -56,7 +65,7 @@ waiting_ec2_state () {
 }
 
 waiting_nat_state () {
-    echo -n "Démarrage de la passerelle NAT."
+    echo -n "Démarrage de la passerelle NAT." | tee logs/main.log
     nat_state=$(aws ec2 describe-nat-gateways --nat-gateway-ids $NAT_ID --query NatGateways[0].State --output text)
     until [[ $nat_state == "available" ]]
     do
@@ -67,9 +76,31 @@ waiting_nat_state () {
     echo ""
 }
 
+clean_logs () {
+    if [[ ! -d "logs" ]]
+    then
+        mkdir logs
+    fi
+    if [[ -f "logs/main.log" ]]
+    then 
+        cat logs/main.log >> logs/main.log.old
+        rm logs/main.log 
+    fi
+    if [[ -f "logs/err.log" ]]
+    then
+        cat logs/err.log >> logs/err.log.old
+        rm logs/err.log
+    fi
+    
+}
+
+create_pass () {
+    cat /dev/urandom | tr -dc A-Za-z0-9 | head -c 30
+}
 
 
 interactive_mode () {
+    clean_logs
     read -rp "Nom du VPC [ $VPC_NAME ] : " name
     if [[ ! -z $name ]]; then VPC_NAME=$name; fi
 
@@ -115,6 +146,7 @@ interactive_mode () {
 }
 
 passive_mode () {
+    clean_logs
     OPTS=$(getopt --name $0 --options r:p:q:s:h --longoptions vpc-name:,vpc-range:,pub-subnet:,priv-subnet:,ssh-ips:,help -- "$@")
     if [[ $? -ne 0 ]]; then usage; fi
     eval set -- "$OPTS"
@@ -164,6 +196,8 @@ VPC_NAME=my-vpc
 VPC_RANGE=10.0.0.0/16
 SSH_IPS=$(dig +short txt ch whoami.cloudflare @1.0.0.1 | tr -d '"')
 
+motd
+
 if [[ -z $1 ]]
 then
     interactive_mode
@@ -198,26 +232,26 @@ echo "# $VPC_NAME" > $VPC_NAME.profile
 
 set -e
 
-echo "Création du VPC $VPC_RANGE.."
+echo "Création du VPC $VPC_RANGE.." | tee logs/main.log
 VPC_ID=$(aws ec2 create-vpc --cidr-block $VPC_RANGE --tag-specifications ResourceType=vpc,Tags="[{Key=Name,Value=$VPC_NAME}]" --query Vpc.VpcId --output text)
 echo "VPC_ID=$VPC_ID" >> $VPC_NAME.profile
 
-echo "Création du sous-réseau $PUB_SUBNET_NAME.."
+echo "Création du sous-réseau $PUB_SUBNET_NAME.." | tee logs/main.log
 PUB_SUBNET_ID=$(aws ec2 create-subnet --vpc-id $VPC_ID --cidr-block $PUB_SUBNET_RANGE --availability-zone us-east-1f --tag-specifications ResourceType=subnet,Tags="[{Key=Name,Value=$PUB_SUBNET_NAME}]" --query Subnet.SubnetId --output text)
 PUB_SUBNET_AVAILABILITY_ZONE=$(aws ec2 describe-subnets --subnet-ids $PUB_SUBNET_ID --query "Subnets[0].AvailabilityZone" --output text)
 echo "PUB_SUBNET_ID=$PUB_SUBNET_ID" >> $VPC_NAME.profile
 
-echo "Création du sous-réseau $PRIV_SUBNET_NAME.."
+echo "Création du sous-réseau $PRIV_SUBNET_NAME.." | tee logs/main.log
 PRIV_SUBNET_ID=$(aws ec2 create-subnet --vpc-id $VPC_ID --cidr-block $PRIV_SUBNET_RANGE --availability-zone us-east-1f --tag-specifications ResourceType=subnet,Tags="[{Key=Name,Value=$PRIV_SUBNET_NAME}]" --query Subnet.SubnetId --output text)
 PRIV_SUBNET_AVAILABILITY_ZONE=$(aws ec2 describe-subnets --subnet-ids $PRIV_SUBNET_ID --query "Subnets[0].AvailabilityZone" --output text)
 echo "PRIV_SUBNET_ID=$PRIV_SUBNET_ID" >> $VPC_NAME.profile
 
-echo "Création de la passerelle Internet $IGW_NAME.."
+echo "Création de la passerelle Internet $IGW_NAME.." | tee logs/main.log
 IGW_ID=$(aws ec2 create-internet-gateway --tag-specifications ResourceType=internet-gateway,Tags="[{Key=Name,Value=$IGW_NAME}]" --query InternetGateway.InternetGatewayId --output text)
 aws ec2 attach-internet-gateway --vpc-id $VPC_ID --internet-gateway-id $IGW_ID
 echo "IGW_ID=$IGW_ID" >> $VPC_NAME.profile
 
-echo "Création de la passerelle NAT $NAT_NAME.."
+echo "Création de la passerelle NAT $NAT_NAME.." | tee logs/main.log
 NAT_EIP_ID=$(aws ec2 allocate-address --tag-specifications ResourceType=elastic-ip,Tags="[{Key=Name,Value=$NAT_EIP_NAME}]" --query AllocationId --output text)
 NAT_EIP_IP=$(aws ec2 describe-addresses --allocation-ids $NAT_EIP_ID --query Addresses[0].PublicIp --output text)
 echo "NAT_EIP_ID=$NAT_EIP_ID" >> $VPC_NAME.profile
@@ -226,49 +260,49 @@ waiting_nat_state
 echo "NAT_ID=$NAT_ID" >> $VPC_NAME.profile
 
 
-echo "Création de la tables de routage $PUB_RTB_NAME.."
+echo "Création de la tables de routage $PUB_RTB_NAME.." | tee logs/main.log
 PUB_RTB_ID=$(aws ec2 create-route-table --vpc-id $VPC_ID --tag-specifications ResourceType=route-table,Tags="[{Key=Name,Value=$PUB_RTB_NAME}]" --query RouteTable.RouteTableId --output text)
 echo "PUB_RTB_ID=$PUB_RTB_ID" >> $VPC_NAME.profile
-aws ec2 create-route --route-table-id $PUB_RTB_ID --destination-cidr-block 0.0.0.0/0 --gateway-id $IGW_ID > /dev/null
+aws ec2 create-route --route-table-id $PUB_RTB_ID --destination-cidr-block 0.0.0.0/0 --gateway-id $IGW_ID >> logs/main.log 2>> logs/err.log
 PUB_RTB_ASSOC=$(aws ec2 associate-route-table  --subnet-id $PUB_SUBNET_ID --route-table-id $PUB_RTB_ID --query AssociationId --output text)
 echo "PUB_RTB_ASSOC=$PUB_RTB_ASSOC" >> $VPC_NAME.profile
 
-echo "Création de la tables de routage $PRIV_RTB_NAME.."
+echo "Création de la tables de routage $PRIV_RTB_NAME.." | tee logs/main.log
 PRIV_RTB_ID=$(aws ec2 create-route-table --vpc-id $VPC_ID --tag-specifications ResourceType=route-table,Tags="[{Key=Name,Value=$PRIV_RTB_NAME}]" --query RouteTable.RouteTableId --output text)
 echo "PRIV_RTB_ID=$PRIV_RTB_ID" >> $VPC_NAME.profile
-aws ec2 create-route --route-table-id $PRIV_RTB_ID --destination-cidr-block 0.0.0.0/0 --gateway-id $NAT_ID > /dev/null
+aws ec2 create-route --route-table-id $PRIV_RTB_ID --destination-cidr-block 0.0.0.0/0 --gateway-id $NAT_ID >> logs/main.log 2>> logs/err.log
 PRIV_RTB_ASSOC=$(aws ec2 associate-route-table  --subnet-id $PRIV_SUBNET_ID --route-table-id $PRIV_RTB_ID --query AssociationId --output text)
 echo "PRIV_RTB_ASSOC=$PRIV_RTB_ASSOC" >> $VPC_NAME.profile
 
-echo "Création du groupe de sécurité $WEB_SG_NAME.."
+echo "Création du groupe de sécurité $WEB_SG_NAME.." | tee logs/main.log
 WEB_SG_ID=$(aws ec2 create-security-group --group-name $WEB_SG_NAME --description "Security group for Web servers" --vpc-id $VPC_ID --output text)
 echo "WEB_SG_ID=$WEB_SG_ID" >> $VPC_NAME.profile
-aws ec2 authorize-security-group-ingress --group-id $WEB_SG_ID --ip-permissions IpProtocol=icmp,FromPort='8',ToPort='-1',IpRanges=[{CidrIp=0.0.0.0/0}] > /dev/null
-aws ec2 authorize-security-group-ingress --group-id $WEB_SG_ID --protocol tcp --port 80 --cidr 0.0.0.0/0 > /dev/null
-aws ec2 authorize-security-group-ingress --group-id $WEB_SG_ID --protocol tcp --port 443 --cidr 0.0.0.0/0 > /dev/null
+aws ec2 authorize-security-group-ingress --group-id $WEB_SG_ID --ip-permissions IpProtocol=icmp,FromPort='8',ToPort='-1',IpRanges=[{CidrIp=0.0.0.0/0}] >> logs/main.log 2>> logs/err.log
+aws ec2 authorize-security-group-ingress --group-id $WEB_SG_ID --protocol tcp --port 80 --cidr 0.0.0.0/0 >> logs/main.log 2>> logs/err.log
+aws ec2 authorize-security-group-ingress --group-id $WEB_SG_ID --protocol tcp --port 443 --cidr 0.0.0.0/0 >> logs/main.log 2>> logs/err.log
 for ip in $(echo "$SSH_IPS" | sed "s/,/ /g")
 do
-    aws ec2 authorize-security-group-ingress --group-id $WEB_SG_ID --protocol tcp --port 22 --cidr $ip/32 > /dev/null
+    aws ec2 authorize-security-group-ingress --group-id $WEB_SG_ID --protocol tcp --port 22 --cidr $ip/32 >> logs/main.log 2>> logs/err.log
 done
 
 
-echo "Création du groupe de sécurité $DB_SG_NAME.."
+echo "Création du groupe de sécurité $DB_SG_NAME.." | tee logs/main.log
 DB_SG_ID=$(aws ec2 create-security-group --group-name $DB_SG_NAME --description "Security group for DB Servers" --vpc-id $VPC_ID --output text)
 echo "DB_SG_ID=$DB_SG_ID" >> $VPC_NAME.profile
-aws ec2 authorize-security-group-ingress --group-id $DB_SG_ID --ip-permissions IpProtocol=icmp,FromPort='8',ToPort='-1',UserIdGroupPairs=[{GroupId=$WEB_SG_ID}] > /dev/null
-aws ec2 authorize-security-group-ingress --group-id $DB_SG_ID --protocol tcp --port 3306 --source-group $WEB_SG_ID > /dev/null
-aws ec2 authorize-security-group-ingress --group-id $DB_SG_ID --protocol tcp --port 22 --source-group $WEB_SG_ID > /dev/null
+aws ec2 authorize-security-group-ingress --group-id $DB_SG_ID --ip-permissions IpProtocol=icmp,FromPort='8',ToPort='-1',UserIdGroupPairs=[{GroupId=$WEB_SG_ID}] >> logs/main.log 2>> logs/err.log
+aws ec2 authorize-security-group-ingress --group-id $DB_SG_ID --protocol tcp --port 3306 --source-group $WEB_SG_ID >> logs/main.log 2>> logs/err.log
+aws ec2 authorize-security-group-ingress --group-id $DB_SG_ID --protocol tcp --port 22 --source-group $WEB_SG_ID >> logs/main.log 2>> logs/err.log
 
 
-echo "Création du groupe de sécurité $IDS_SG_NAME.."
+echo "Création du groupe de sécurité $IDS_SG_NAME.." | tee logs/main.log
 IDS_SG_ID=$(aws ec2 create-security-group --group-name $IDS_SG_NAME --description "Security group for IDS Servers" --vpc-id $VPC_ID --output text)
 echo "IDS_SG_ID=$IDS_SG_ID" >> $VPC_NAME.profile
-aws ec2 authorize-security-group-ingress --group-id $IDS_SG_ID --ip-permissions IpProtocol=icmp,FromPort='8',ToPort='-1',IpRanges=[{CidrIp=$PUB_SUBNET_RANGE}] > /dev/null
-aws ec2 authorize-security-group-ingress --group-id $IDS_SG_ID --protocol udp --port 4789 --cidr $PUB_SUBNET_RANGE > /dev/null
-aws ec2 authorize-security-group-ingress --group-id $IDS_SG_ID --protocol tcp --port 22 --cidr $PUB_SUBNET_RANGE > /dev/null
+aws ec2 authorize-security-group-ingress --group-id $IDS_SG_ID --ip-permissions IpProtocol=icmp,FromPort='8',ToPort='-1',IpRanges=[{CidrIp=$PUB_SUBNET_RANGE}] >> logs/main.log 2>> logs/err.log
+aws ec2 authorize-security-group-ingress --group-id $IDS_SG_ID --protocol udp --port 4789 --cidr $PUB_SUBNET_RANGE >> logs/main.log 2>> logs/err.log
+aws ec2 authorize-security-group-ingress --group-id $IDS_SG_ID --protocol tcp --port 22 --cidr $PUB_SUBNET_RANGE >> logs/main.log 2>> logs/err.log
 
 
-echo "Création des clés privées pour la connexion aux instance.."
+echo "Création des clés privées pour la connexion aux instance.." | tee logs/main.log
 if [[ -f "$PWD/$WEB_KEY_NAME.pem" || -f "$PWD/$DB_KEY_NAME.pem" ]]
 then
     rm -f $PWD/$WEB_KEY_NAME.pem $PWD/$DB_KEY_NAME.pem
@@ -284,30 +318,11 @@ chmod 400 $PWD/$WEB_KEY_NAME.pem
 chmod 400 $PWD/$DB_KEY_NAME.pem
 chmod 400 $PWD/$IDS_KEY_NAME.pem
 
-echo "Création de l'instance EC2 $WEB_INSTANCE_NAME sous Debian 11 64 bit.."
+echo "Création de l'instance EC2 $DB_INSTANCE_NAME sous Debian 11 64 bit.." | tee logs/main.log
 
-CONFIG_WEB=$(cat << CONFIG
-#!/bin/bash
-export DEBIAN_FRONTEND=noninteractive
-sudo -E apt -y update
-echo "update ok"
-sudo -E apt -y upgrade
-echo "upgrade ok"
-sudo -E apt -y install nginx
-echo "nginx ok"
-CONFIG
-)
-
-WEB_INSTANCE_ID=$(aws ec2 run-instances --image-id ami-09a41e26df464c548 --instance-type t3a.micro --placement AvailabilityZone=$PUB_SUBNET_AVAILABILITY_ZONE --key-name $WEB_KEY_NAME --security-group-ids $WEB_SG_ID --subnet-id $PUB_SUBNET_ID --tag-specifications ResourceType=instance,Tags="[{Key=Name,Value=$WEB_INSTANCE_NAME}]" --query Instances[0].InstanceId --output text --user-data "$CONFIG_WEB")
-waiting_ec2_state $WEB_INSTANCE_ID
-WEB_EIP_ID=$(aws ec2 allocate-address --tag-specifications ResourceType=elastic-ip,Tags="[{Key=Name,Value=$WEB_EIP_NAME}]" --query AllocationId --output text)
-WEB_EIP_IP=$(aws ec2 describe-addresses --allocation-ids $WEB_EIP_ID --query Addresses[0].PublicIp --output text)
-WEB_ENI_ID=$(aws ec2 describe-instances --instance-ids $WEB_INSTANCE_ID --query Reservations[0].Instances[0].NetworkInterfaces[0].NetworkInterfaceId --output text)
-aws ec2 associate-address --instance-id $WEB_INSTANCE_ID --allocation-id $WEB_EIP_ID > /dev/null
-echo "WEB_EIP_ID=$WEB_EIP_ID" >> $VPC_NAME.profile
-echo "WEB_INSTANCE_ID=$WEB_INSTANCE_ID" >> $VPC_NAME.profile
-
-echo "Création de l'instance EC2 $DB_INSTANCE_NAME sous Debian 11 64 bit.."
+DB_PRIV_IP=$(echo $PRIV_SUBNET_RANGE | cut -d . -f 1-3 ).20
+DB_ROOT_PASSWD=$(create_pass)
+DB_USER_PASSWD=$(create_pass)
 
 CONFIG_DB=$(cat << CONFIG
 #!/bin/bash
@@ -318,61 +333,118 @@ sudo -E apt -y upgrade
 echo "upgrade ok"
 sudo -E apt -y install mariadb-server
 echo "mariadb ok"
-sudo mariadb-secure-installation << INSTALL
-y
-n
-y
-y
-y
-y
-INSTALL
+sudo mariadb -u root << USER
+UPDATE mysql.global_priv SET priv=json_set(priv, '$.plugin', 'mysql_native_password', '$.authentication_string', PASSWORD('$DB_ROOT_PASSWD')) WHERE User='root';
+DELETE FROM mysql.global_priv WHERE User='';
+DELETE FROM mysql.global_priv WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
+DROP DATABASE IF EXISTS test;
+DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
+CREATE DATABASE app;
+USE app;
+CREATE TABLE users(id int auto_increment, login varchar(255) not null, pass varchar(255) not null, primary key(id));
+INSERT INTO users(login,pass) VALUES ('admin', 'admin'), ('toto', 'toto');
+GRANT ALL PRIVILEGES ON app.* TO 'user'@'%' IDENTIFIED BY '$DB_USER_PASSWD' WITH GRANT OPTION;
+FLUSH PRIVILEGES;
+EXIT;
+USER
+sudo sed -i 's/# port = 3306/port = 3306/' /etc/mysql/my.cnf
+sudo sed -i 's/socket = \/run\/mysqld\/mysqld.sock/# socket = \/run\/mysqld\/mysqld.sock/' /etc/mysql/my.cnf
+echo "[mysqld]" | sudo tee -a /etc/mysql/my.cnf
+echo "skip-networking = 0" | sudo tee -a /etc/mysql/my.cnf
+echo "skip-bind-address" | sudo tee -a /etc/mysql/my.cnf
+sudo systemctl restart mariadb
 CONFIG
 )
 
-DB_INSTANCE_ID=$(aws ec2 run-instances --image-id ami-09a41e26df464c548 --instance-type t3a.micro --placement AvailabilityZone=$PRIV_SUBNET_AVAILABILITY_ZONE --key-name $DB_KEY_NAME --security-group-ids $DB_SG_ID --subnet-id $PRIV_SUBNET_ID --tag-specifications ResourceType=instance,Tags="[{Key=Name,Value=$DB_INSTANCE_NAME}]" --query Instances[0].InstanceId --output text  --user-data "$CONFIG_DB")
+DB_INSTANCE_ID=$(aws ec2 run-instances --image-id ami-09a41e26df464c548 --instance-type t3a.micro --placement AvailabilityZone=$PRIV_SUBNET_AVAILABILITY_ZONE --key-name $DB_KEY_NAME --security-group-ids $DB_SG_ID --subnet-id $PRIV_SUBNET_ID --private-ip-address $DB_PRIV_IP --tag-specifications ResourceType=instance,Tags="[{Key=Name,Value=$DB_INSTANCE_NAME}]" --query Instances[0].InstanceId --output text  --user-data "$CONFIG_DB")
 waiting_ec2_state $DB_INSTANCE_ID
-DB_PRIV_IP=$(aws ec2 describe-instances --instance-ids $DB_INSTANCE_ID --query Reservations[0].Instances[0].PrivateIpAddress --output text)
 echo "DB_INSTANCE_ID=$DB_INSTANCE_ID" >> $VPC_NAME.profile
 
-echo "Création de l'instance EC2 $IDS_INSTANCE_NAME sous Debian 11 64 bit.."
+echo "Création de l'instance EC2 $WEB_INSTANCE_NAME sous Debian 11 64 bit.." | tee logs/main.log
+
+WEB_PRIV_IP=$(echo $PUB_SUBNET_RANGE | cut -d . -f 1-3 ).10
+
+cp template.php index.php
+sed -i "s/dbhost/'$DB_PRIV_IP'/" index.php
+sed -i "s/dbpass/'$DB_USER_PASSWD'/" index.php
+PHP_FILE=$(cat index.php | base64)
+
+CONFIG_WEB=$(cat << CONFIG
+#!/bin/bash
+export DEBIAN_FRONTEND=noninteractive
+sudo -E apt -y update
+echo "update ok"
+sudo -E apt -y upgrade
+echo "upgrade ok"
+sudo -E apt -y install nginx php-fpm php-mysqli
+echo "nginx ok"
+echo "$PWD"
+sudo sed -i 's/index index.html index.htm index.nginx-debian.html;/index index.html index.htm index.nginx-debian.html index.php;/' /etc/nginx/sites-available/default
+
+sudo sed -i '56,63s/#//' /etc/nginx/sites-available/default
+sudo sed -i '62s/fast/#fast/' /etc/nginx/sites-available/default
+
+echo "modif default ok"
+echo '$PHP_FILE' | base64 -d > /tmp/index.php && echo "envoie ok"
+sudo cp /tmp/index.php /var/www/html/index.php && echo "copie ok"
+sudo rm /var/www/html/index.nginx-debian.html
+sudo chown -R www-data:www-data /var/www/html/ && echo "chown ok"
+sudo systemctl restart nginx && echo "restart ok"
+CONFIG
+)
+
+WEB_INSTANCE_ID=$(aws ec2 run-instances --image-id ami-09a41e26df464c548 --instance-type t3a.micro --placement AvailabilityZone=$PUB_SUBNET_AVAILABILITY_ZONE --key-name $WEB_KEY_NAME --security-group-ids $WEB_SG_ID --private-ip-address $WEB_PRIV_IP --subnet-id $PUB_SUBNET_ID --tag-specifications ResourceType=instance,Tags="[{Key=Name,Value=$WEB_INSTANCE_NAME}]" --query Instances[0].InstanceId --output text --user-data "$CONFIG_WEB")
+waiting_ec2_state $WEB_INSTANCE_ID
+WEB_EIP_ID=$(aws ec2 allocate-address --tag-specifications ResourceType=elastic-ip,Tags="[{Key=Name,Value=$WEB_EIP_NAME}]" --query AllocationId --output text)
+WEB_EIP_IP=$(aws ec2 describe-addresses --allocation-ids $WEB_EIP_ID --query Addresses[0].PublicIp --output text)
+WEB_ENI_ID=$(aws ec2 describe-instances --instance-ids $WEB_INSTANCE_ID --query Reservations[0].Instances[0].NetworkInterfaces[0].NetworkInterfaceId --output text)
+aws ec2 associate-address --instance-id $WEB_INSTANCE_ID --allocation-id $WEB_EIP_ID >> logs/main.log 2>> logs/err.log
+echo "WEB_EIP_ID=$WEB_EIP_ID" >> $VPC_NAME.profile
+echo "WEB_INSTANCE_ID=$WEB_INSTANCE_ID" >> $VPC_NAME.profile
+rm index.php
+
+echo "Création de l'instance EC2 $IDS_INSTANCE_NAME sous Debian 11 64 bit.." | tee logs/main.log
+
+IDS_PRIV_IP=$(echo $PRIV_SUBNET_RANGE | cut -d . -f 1-3 ).30
 
 CONFIG_IDS=$(cat << CONFIG
 #!/bin/bash
 export DEBIAN_FRONTEND=noninteractive
 sudo -E apt -y update
 sudo -E apt -y upgrade
-sudo -E apt -y install suricata
-INTERFACE=$(ip a | grep 2: | cut -d " " -f 2 | sed "s/://g")
-cat /etc/suricata/suricata.yaml | sed "s/interface: eth0/interface: \$INTERFACE/g" > ~/config_suricata
-sudo cp ~/config_suricata /etc/suricata/suricata.yaml
-rm ~/config_suricata
-sudo systemctl enable suricata
-sudo systemctl start suricata
-sudo suricata-update -o /etc/suricata/rules
-sudo systemctl restart suricata
+sudo -E apt -y install snort
+cat <<EOT >> /etc/snort/rules/local.rules
+alert udp any any -> any any (msg: "Error Based SQL Injection Detected"; content: "%27" ; sid:100000011; )
+alert udp any any -> any any (msg: "Error Based SQL Injection Detected"; content: "22" ; sid:100000012; )
+alert udp any any -> any any (msg: "AND SQL Injection Detected"; content: "and" ; nocase; sid:100000060; )
+alert udp any any -> any any (msg: "OR SQL Injection Detected"; content: "or" ; nocase; sid:100000061; )    
+EOT
+sudo sed -i 's/192.168.0.0\/16/$(echo $VPC_RANGE | cut -d / -f 1)\/$(echo $VPC_RANGE | cut -d / -f 2)/' /etc/snort/snort.debian.conf
+sudo sed -i 's/ipvar HOME_NET any/ipvar HOME_NET $(echo $VPC_RANGE | cut -d / -f 1)/' /etc/snort/snort.conf
+sudo systemctl enable snort
+sudo systemctl restart snort
 CONFIG
 )
 
-IDS_INSTANCE_ID=$(aws ec2 run-instances --image-id ami-09a41e26df464c548 --instance-type t3a.micro --placement AvailabilityZone=$PRIV_SUBNET_AVAILABILITY_ZONE --key-name $IDS_KEY_NAME --security-group-ids $IDS_SG_ID --subnet-id $PRIV_SUBNET_ID --tag-specifications ResourceType=instance,Tags="[{Key=Name,Value=$IDS_INSTANCE_NAME}]" --query Instances[0].InstanceId --output text --user-data "$CONFIG_IDS")
+IDS_INSTANCE_ID=$(aws ec2 run-instances --image-id ami-09a41e26df464c548 --instance-type t3a.micro --private-ip-address $IDS_PRIV_IP --placement AvailabilityZone=$PRIV_SUBNET_AVAILABILITY_ZONE --key-name $IDS_KEY_NAME --security-group-ids $IDS_SG_ID --subnet-id $PRIV_SUBNET_ID --tag-specifications ResourceType=instance,Tags="[{Key=Name,Value=$IDS_INSTANCE_NAME}]" --query Instances[0].InstanceId --output text --user-data "$CONFIG_IDS")
 waiting_ec2_state $IDS_INSTANCE_ID
-IDS_PRIV_IP=$(aws ec2 describe-instances --instance-ids $IDS_INSTANCE_ID --query Reservations[0].Instances[0].PrivateIpAddress --output text)
 IDS_ENI_ID=$(aws ec2 describe-instances --instance-ids $IDS_INSTANCE_ID --query Reservations[0].Instances[0].NetworkInterfaces[0].NetworkInterfaceId --output text)
 echo "IDS_INSTANCE_ID=$IDS_INSTANCE_ID" >> $VPC_NAME.profile
 
-echo "Mise en place du traffic mirroring.."
+echo "Mise en place du traffic mirroring.." | tee logs/main.log
 
 TRAFFIC_MIRROR_TARGET_ID=$(aws ec2 create-traffic-mirror-target --network-interface-id $IDS_ENI_ID  --description "IDS appliance as traffic mirroring target" --query TrafficMirrorTarget.TrafficMirrorTargetId --output text)
 TRAFFIC_MIRROR_FILTER_ID=$(aws ec2 create-traffic-mirror-filter --description "traffic mirroring filter for IDS appliance" --query TrafficMirrorFilter.TrafficMirrorFilterId --output text)
-aws ec2 create-traffic-mirror-filter-rule --traffic-mirror-filter-id $TRAFFIC_MIRROR_FILTER_ID --traffic-direction ingress --rule-number 1 --rule-action accept --destination-cidr-block 0.0.0.0/0 --source-cidr-block 0.0.0.0/0 > /dev/null
+aws ec2 create-traffic-mirror-filter-rule --traffic-mirror-filter-id $TRAFFIC_MIRROR_FILTER_ID --traffic-direction ingress --rule-number 1 --rule-action accept --destination-cidr-block 0.0.0.0/0 --source-cidr-block 0.0.0.0/0 >> logs/main.log 2>> logs/err.log
 TRAFFIC_MIRROR_SESSION_ID=$(aws ec2 create-traffic-mirror-session --traffic-mirror-target-id $TRAFFIC_MIRROR_TARGET_ID --network-interface-id $WEB_ENI_ID --session-number 1 --traffic-mirror-filter-id $TRAFFIC_MIRROR_FILTER_ID --description "traffic mirroring session for IDS appliance" --query TrafficMirrorSession.TrafficMirrorSessionId --output text)
 echo "TRAFFIC_MIRROR_TARGET_ID=$TRAFFIC_MIRROR_TARGET_ID" >> $VPC_NAME.profile
 echo "TRAFFIC_MIRROR_FILTER_ID=$TRAFFIC_MIRROR_FILTER_ID" >> $VPC_NAME.profile
 echo "TRAFFIC_MIRROR_SESSION_ID=$TRAFFIC_MIRROR_SESSION_ID" >> $VPC_NAME.profile
 
-echo "Montage des tunnels SSH"
+echo "Montage des tunnels SSH.."
 
-ssh -f -i $WEB_KEY_NAME.pem admin@$WEB_EIP_IP -L 2200:$DB_PRIV_IP:22 -N
-ssh -f -i $WEB_KEY_NAME.pem admin@$WEB_EIP_IP -L 2201:$IDS_PRIV_IP:22 -N
+ssh -f -o StrictHostKeyChecking=no -i $WEB_KEY_NAME.pem admin@$WEB_EIP_IP -L 2200:$DB_PRIV_IP:22 -N >> logs/main.log 2>> logs/err.log
+ssh -f -o StrictHostKeyChecking=no -i $WEB_KEY_NAME.pem admin@$WEB_EIP_IP -L 2201:$IDS_PRIV_IP:22 -N >> logs/main.log 2>> logs/err.log
 
 echo -e "\nRécapitulatif du VPC créé"
 echo "=========================="
@@ -410,6 +482,8 @@ echo -e "\t\tInstance : $DB_INSTANCE_NAME"
 echo -e "\t\t\tID : $DB_INSTANCE_ID"
 echo -e "\t\t\tIP privée : $DB_PRIV_IP"
 echo -e "\t\t\tClé privé SSH : $PWD/$DB_KEY_NAME.pem"
+echo -e "\t\t\tMot de passe MariaDB root : $DB_ROOT_PASSWD"
+echo -e "\t\t\tMot de passe MariaDB user : $DB_USER_PASSWD"
 echo -e "\t\tGroupe de sécurité : $IDS_SG_NAME"
 echo -e "\t\t\tID : $IDS_SG_ID"
 echo -e "\t\tInstance : $IDS_INSTANCE_NAME"
